@@ -1,21 +1,85 @@
-version: '3'
+version: '3.8'
 
 services:
-###> doctrine/doctrine-bundle ###
-  database:
-    image: postgres:${POSTGRES_VERSION:-15}-alpine
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-app}
-      # You should definitely change the password in production
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-!ChangeMe!}
-      POSTGRES_USER: ${POSTGRES_USER:-app}
+  traefik:
+    image: traefik:${TRAEFIK_VERSION?required}
+    ports:
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+      - "127.0.0.1:8088:8080"
+    command:
+      - "--api=true"
+      - "--api.dashboard=true"
+      - "--api.insecure=true"
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      - "--providers.docker.exposedByDefault=false"
+      - "--providers.file.filename=/etc/traefik/dynamic_conf.yml"
+      - "--providers.file.watch=true"
+      - "--entryPoints.web.address=:80"
+      - "--entryPoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entryPoints.web.http.redirections.entryPoint.scheme=https"
+      - "--entryPoints.web.http.redirections.entryPoint.permanent=true"
+      - "--entryPoints.websecure.address=:443"
+      - "--ping=true"
     volumes:
-      - database_data:/var/lib/postgresql/data:rw
-      # You may use a bind-mounted host directory instead, so that it is harder to accidentally remove the volume and lose all your data!
-      # - ./docker/db/data:/var/lib/postgresql/data:rw
-###< doctrine/doctrine-bundle ###
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  nginx:
+    image: nginxinc/nginx-unprivileged:${NGINX_VERSION?required}-alpine
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.finik-server.rule=Host(`app.stickers-wb.localhost`)"
+      - "traefik.http.services.finik-server.loadbalancer.server.port=8080"
+      - "traefik.http.routers.finik-server.entryPoints=websecure"
+      - "traefik.http.routers.finik-server.tls=true"
+    environment:
+      NGINX_PORT: 8080
+      API_HOST: app
+      API_PORT: 9000
+    volumes:
+      - ./docker/nginx/default.conf.template:/etc/nginx/templates/default.conf.template
+      - ./public:/var/www/html/public:ro
+    depends_on:
+      - app
+
+  app:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+      args:
+        PHP_VERSION: ${PHP_VERSION?required}
+    environment:
+      PHP_EXTENSION_XDEBUG: "1"
+      PHP_INI_MEMORY_LIMIT: "1G"
+      PHP_INI_XDEBUG__IDEKEY: "PHPSTORM"
+    volumes:
+      - .:/var/www/html
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:${POSTGRES_VERSION?required}-alpine
+    shm_size: 1g
+    environment:
+      POSTGRES_DB: stickers-wb
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: pass
+      POSTGRES_INITDB_ARGS: "--locale=ru_RU.utf8"
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/dump:/docker-entrypoint-initdb.d:ro
+
+  adminer:
+    image: adminer:${ADMINER_VERSION?required}-standalone
+    command: [ "php", "-S", "0.0.0.0:8080", "-t", "/var/www/html" ]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.finik-adminer.rule=Host(`adminer.stickers-wb.localhost`)"
+      - "traefik.http.services.finik-adminer.loadbalancer.server.port=8080"
+      - "traefik.http.routers.finik-adminer.entryPoints=websecure"
+      - "traefik.http.routers.finik-adminer.tls=true"
 
 volumes:
-###> doctrine/doctrine-bundle ###
-  database_data:
-###< doctrine/doctrine-bundle ###
+  postgres-data:
